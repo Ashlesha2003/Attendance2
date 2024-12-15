@@ -4,7 +4,7 @@ import numpy as np
 import os
 import pandas as pd
 from datetime import datetime
-import shutil
+from PIL import Image
 
 # Ensure the dataset and attendance directories exist
 DATASET_DIR = "dataset"
@@ -22,10 +22,25 @@ face_cascade = load_face_cascade()
 if not os.path.exists(ATTENDANCE_FILE):
     pd.DataFrame(columns=["Roll Number", "Name", "Time"]).to_csv(ATTENDANCE_FILE, index=False)
 
-def detect_and_crop_faces(image):
+def detect_and_crop_faces(uploaded_file):
     """Detect and crop faces from an uploaded image."""
-    # Convert image to grayscale
-    gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+    # Read the image using PIL
+    image = Image.open(uploaded_file)
+    
+    # Convert PIL image to numpy array
+    img_array = np.array(image)
+    
+    # Ensure the image is in BGR format for OpenCV
+    if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+        # Convert to grayscale
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    elif len(img_array.shape) == 2:
+        # Already grayscale
+        gray = img_array
+    else:
+        st.error("Unsupported image format")
+        return []
     
     # Detect faces
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
@@ -47,7 +62,7 @@ def encode_faces(data_dir):
 
     for root, dirs, files in os.walk(data_dir):
         for file in files:
-            if file.endswith(("jpg", "png", "jpeg")):
+            if file.lower().endswith(("jpg", "png", "jpeg")):
                 img_path = os.path.join(root, file)
                 label = os.path.basename(root)
 
@@ -159,9 +174,19 @@ def take_attendance_page():
         # Display the uploaded image
         st.image(uploaded_file, caption="Uploaded Image")
         
+        # Read image with PIL and convert to numpy array
+        img = Image.open(uploaded_file)
+        img_array = np.array(img)
+        
         # Convert to grayscale
-        img = cv2.imdecode(np.frombuffer(uploaded_file.read(), np.uint8), cv2.IMREAD_COLOR)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+        elif len(img_array.shape) == 2:
+            gray = img_array
+        else:
+            st.error("Unsupported image format")
+            return
         
         # Detect faces
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
