@@ -1,6 +1,7 @@
 streamlit==1.29.0
-opencv-python-headless==4.7.0.72
-numpy==1.24.3
-pandas==2.0.1
-scikit-image==0.19.3
-protobuf==3.20.3
+opencv-python-headless==4.8.1.78
+numpy>=1.24.3
+pandas>=2.0.1
+scikit-image>=0.19.3
+protobuf>=3.20.3
+setuptools>=69.2.0
