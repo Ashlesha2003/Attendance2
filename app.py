@@ -5,18 +5,12 @@ import os
 import pandas as pd
 from datetime import datetime
 from PIL import Image
+import face_recognition
 
 # Ensure the dataset and attendance directories exist
 DATASET_DIR = "dataset"
 ATTENDANCE_FILE = "attendance.csv"
 os.makedirs(DATASET_DIR, exist_ok=True)
-
-# Load Haar Cascade Classifier for face detection
-@st.cache_resource
-def load_face_cascade():
-    return cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-
-face_cascade = load_face_cascade()
 
 # Ensure attendance file exists
 if not os.path.exists(ATTENDANCE_FILE):
@@ -30,74 +24,39 @@ def detect_and_crop_faces(uploaded_file):
     # Convert PIL image to numpy array
     img_array = np.array(image)
     
-    # Ensure the image is in BGR format for OpenCV
-    if len(img_array.shape) == 3 and img_array.shape[2] == 3:
-        # Convert to grayscale
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
-    elif len(img_array.shape) == 2:
-        # Already grayscale
-        gray = img_array
-    else:
-        st.error("Unsupported image format")
-        return []
-    
     # Detect faces
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-    
+    face_locations = face_recognition.face_locations(img_array)
     cropped_faces = []
-    for (x, y, w, h) in faces:
-        # Crop the face
-        face_img = gray[y:y+h, x:x+w]
+    
+    for face_location in face_locations:
+        top, right, bottom, left = face_location
+        face_img = img_array[top:bottom, left:right]
         cropped_faces.append(face_img)
     
     return cropped_faces
 
 def encode_faces(data_dir):
     """Encode faces for recognition."""
-    faces = []
-    labels = []
-    label_dict = {}
-    label_count = 0
+    known_face_encodings = []
+    known_face_names = []
 
     for root, dirs, files in os.walk(data_dir):
         for file in files:
             if file.lower().endswith(("jpg", "png", "jpeg")):
                 img_path = os.path.join(root, file)
                 label = os.path.basename(root)
-
-                # Assign a new label for each student
-                if label not in label_dict:
-                    label_dict[label] = label_count
-                    label_count += 1
-
-                img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-                # Detect faces
-                faces_rects = face_cascade.detectMultiScale(img, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-
-                for (x, y, w, h) in faces_rects:
-                    face_img = img[y:y+h, x:x+w]
-                    faces.append(face_img)
-                    labels.append(label_dict[label])
-    return faces, labels, label_dict
-
-def train_face_recognizer():
-    """Train the face recognizer."""
-    print("Encoding faces from the dataset...")
-    faces, labels, label_dict = encode_faces(DATASET_DIR)
+                
+                # Read image
+                image = face_recognition.load_image_file(img_path)
+                
+                # Encode faces
+                face_encodings = face_recognition.face_encodings(image)
+                
+                for encoding in face_encodings:
+                    known_face_encodings.append(encoding)
+                    known_face_names.append(label)
     
-    if not faces:
-        st.error("No faces found in dataset.")
-        return None, label_dict
-
-    # Initialize the LBPH face recognizer
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-
-    # Train the recognizer on the faces and labels
-    recognizer.train(faces, np.array(labels))
-
-    print("Training complete.")
-    return recognizer, label_dict
+    return known_face_encodings, known_face_names
 
 def mark_attendance(name):
     """Mark attendance for a student."""
@@ -148,7 +107,7 @@ def add_student_page():
             if faces:
                 # Save the first detected face
                 face_path = os.path.join(student_folder, f"{name}_{i+1}.jpg")
-                cv2.imwrite(face_path, faces[0])
+                Image.fromarray(faces[0]).save(face_path)
                 st.success(f"Image {i+1} saved successfully")
             else:
                 st.warning(f"No face detected in image {i+1}")
@@ -157,11 +116,16 @@ def take_attendance_page():
     """Streamlit page for taking attendance."""
     st.header("Take Attendance")
     
-    # Try to train the recognizer
+    # Encode faces from dataset
     try:
-        recognizer, label_dict = train_face_recognizer()
+        known_face_encodings, known_face_names = encode_faces(DATASET_DIR)
+        
+        if not known_face_encodings:
+            st.error("No faces found in dataset. Please add students first.")
+            return
+    
     except Exception as e:
-        st.error(f"Error training recognizer: {e}")
+        st.error(f"Error encoding faces: {e}")
         return
     
     # File uploader for attendance images
@@ -174,38 +138,27 @@ def take_attendance_page():
         # Display the uploaded image
         st.image(uploaded_file, caption="Uploaded Image")
         
-        # Read image with PIL and convert to numpy array
-        img = Image.open(uploaded_file)
-        img_array = np.array(img)
+        # Read image
+        img = face_recognition.load_image_file(uploaded_file)
         
-        # Convert to grayscale
-        if len(img_array.shape) == 3 and img_array.shape[2] == 3:
-            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-            gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
-        elif len(img_array.shape) == 2:
-            gray = img_array
-        else:
-            st.error("Unsupported image format")
-            return
-        
-        # Detect faces
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+        # Find face locations and encodings in the uploaded image
+        face_locations = face_recognition.face_locations(img)
+        face_encodings = face_recognition.face_encodings(img, face_locations)
         
         # Recognize faces
         recognized_students = []
-        for (x, y, w, h) in faces:
-            # Extract face region
-            face_img = gray[y:y+h, x:x+w]
+        for face_encoding in face_encodings:
+            # Compare face encodings
+            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+            name = "Unknown"
             
-            # Recognize the face
-            try:
-                label, confidence = recognizer.predict(face_img)
-                
-                if confidence < 100:  # Lower confidence is better
-                    name = [k for k, v in label_dict.items() if v == label][0]
-                    recognized_students.append(name)
-            except Exception as e:
-                st.error(f"Error in face recognition: {e}")
+            # Find the best match
+            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            best_match_index = np.argmin(face_distances)
+            
+            if matches[best_match_index]:
+                name = known_face_names[best_match_index]
+                recognized_students.append(name)
         
         # Mark attendance for recognized students
         if recognized_students:
@@ -244,5 +197,5 @@ def main():
         view_attendance_page()
 
 # Requirements for Streamlit deployment
-if __name__ == "__main__":
+if _name_ == "_main_":
     main()
