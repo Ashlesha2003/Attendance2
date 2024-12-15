@@ -244,5 +244,5 @@ def main():
         view_attendance_page()
 
 # Requirements for Streamlit deployment
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
