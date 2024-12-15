@@ -30,10 +30,13 @@ def detect_and_crop_faces(uploaded_file):
     # Convert PIL image to numpy array
     img_array = np.array(image)
     
-    # Convert to grayscale
+    # Ensure the image is in BGR format for OpenCV
     if len(img_array.shape) == 3 and img_array.shape[2] == 3:
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        # Convert to grayscale
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
     elif len(img_array.shape) == 2:
+        # Already grayscale
         gray = img_array
     else:
         st.error("Unsupported image format")
@@ -49,23 +52,6 @@ def detect_and_crop_faces(uploaded_file):
         cropped_faces.append(face_img)
     
     return cropped_faces
-
-def compute_histogram(image):
-    """Compute histogram of the image for comparison."""
-    # Resize to a standard size
-    resized = cv2.resize(image, (100, 100))
-    # Compute histogram
-    hist = cv2.calcHist([resized], [0], None, [256], [0, 256]).flatten()
-    return hist
-
-def compare_faces(face1, face2, threshold=0.7):
-    """Compare two faces using histogram comparison."""
-    hist1 = compute_histogram(face1)
-    hist2 = compute_histogram(face2)
-    
-    # Compare histograms
-    similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
-    return similarity > threshold
 
 def encode_faces(data_dir):
     """Encode faces for recognition."""
@@ -93,8 +79,25 @@ def encode_faces(data_dir):
                     face_img = img[y:y+h, x:x+w]
                     faces.append(face_img)
                     labels.append(label_dict[label])
-    
     return faces, labels, label_dict
+
+def train_face_recognizer():
+    """Train the face recognizer."""
+    print("Encoding faces from the dataset...")
+    faces, labels, label_dict = encode_faces(DATASET_DIR)
+    
+    if not faces:
+        st.error("No faces found in dataset.")
+        return None, label_dict
+
+    # Initialize the LBPH face recognizer
+    recognizer = cv2.face.LBPHFaceRecognizer_create()
+
+    # Train the recognizer on the faces and labels
+    recognizer.train(faces, np.array(labels))
+
+    print("Training complete.")
+    return recognizer, label_dict
 
 def mark_attendance(name):
     """Mark attendance for a student."""
@@ -154,15 +157,11 @@ def take_attendance_page():
     """Streamlit page for taking attendance."""
     st.header("Take Attendance")
     
-    # Try to encode faces
+    # Try to train the recognizer
     try:
-        faces, labels, label_dict = encode_faces(DATASET_DIR)
-        
-        if not faces:
-            st.error("No faces found in dataset. Please add students first.")
-            return
+        recognizer, label_dict = train_face_recognizer()
     except Exception as e:
-        st.error(f"Error encoding faces: {e}")
+        st.error(f"Error training recognizer: {e}")
         return
     
     # File uploader for attendance images
@@ -175,25 +174,38 @@ def take_attendance_page():
         # Display the uploaded image
         st.image(uploaded_file, caption="Uploaded Image")
         
-        # Read image
-        img = cv2.imread(uploaded_file.name, cv2.IMREAD_GRAYSCALE)
+        # Read image with PIL and convert to numpy array
+        img = Image.open(uploaded_file)
+        img_array = np.array(img)
         
-        # Detect faces in the uploaded image
-        faces_in_image = face_cascade.detectMultiScale(img, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+        # Convert to grayscale
+        if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+        elif len(img_array.shape) == 2:
+            gray = img_array
+        else:
+            st.error("Unsupported image format")
+            return
+        
+        # Detect faces
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
         
         # Recognize faces
         recognized_students = []
-        for (x, y, w, h) in faces_in_image:
+        for (x, y, w, h) in faces:
             # Extract face region
-            face_img = img[y:y+h, x:x+w]
+            face_img = gray[y:y+h, x:x+w]
             
-            # Compare with known faces
-            for known_face, label in zip(faces, labels):
-                if compare_faces(known_face, face_img):
-                    # Find the name corresponding to this label
+            # Recognize the face
+            try:
+                label, confidence = recognizer.predict(face_img)
+                
+                if confidence < 100:  # Lower confidence is better
                     name = [k for k, v in label_dict.items() if v == label][0]
                     recognized_students.append(name)
-                    break
+            except Exception as e:
+                st.error(f"Error in face recognition: {e}")
         
         # Mark attendance for recognized students
         if recognized_students:
