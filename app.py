@@ -1,23 +1,45 @@
+import streamlit as st
 import cv2
 import numpy as np
 import os
 import pandas as pd
 from datetime import datetime
+import shutil
+
+# Ensure the dataset and attendance directories exist
+DATASET_DIR = "dataset"
+ATTENDANCE_FILE = "attendance.csv"
+os.makedirs(DATASET_DIR, exist_ok=True)
 
 # Load Haar Cascade Classifier for face detection
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+@st.cache_resource
+def load_face_cascade():
+    return cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-# Folder paths
-dataset_dir = "dataset"
-attendance_file = "attendance.csv"
+face_cascade = load_face_cascade()
 
-# Ensure necessary folders and files exist
-os.makedirs(dataset_dir, exist_ok=True)
-if not os.path.exists(attendance_file):
-    pd.DataFrame(columns=["Roll Number", "Name", "Time"]).to_csv(attendance_file, index=False)
+# Ensure attendance file exists
+if not os.path.exists(ATTENDANCE_FILE):
+    pd.DataFrame(columns=["Roll Number", "Name", "Time"]).to_csv(ATTENDANCE_FILE, index=False)
 
-# Function to encode faces using LBPH face recognizer
+def detect_and_crop_faces(image):
+    """Detect and crop faces from an uploaded image."""
+    # Convert image to grayscale
+    gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+    
+    # Detect faces
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    
+    cropped_faces = []
+    for (x, y, w, h) in faces:
+        # Crop the face
+        face_img = gray[y:y+h, x:x+w]
+        cropped_faces.append(face_img)
+    
+    return cropped_faces
+
 def encode_faces(data_dir):
+    """Encode faces for recognition."""
     faces = []
     labels = []
     label_dict = {}
@@ -25,7 +47,7 @@ def encode_faces(data_dir):
 
     for root, dirs, files in os.walk(data_dir):
         for file in files:
-            if file.endswith(("jpg", "png")):
+            if file.endswith(("jpg", "png", "jpeg")):
                 img_path = os.path.join(root, file)
                 label = os.path.basename(root)
 
@@ -44,71 +66,13 @@ def encode_faces(data_dir):
                     labels.append(label_dict[label])
     return faces, labels, label_dict
 
-# Function to add a new student
-def add_student():
-    name = input("Enter student's name: ")
-    roll_number = input("Enter student's roll number: ")
-    student_folder = os.path.join(dataset_dir, f"{roll_number}_{name}")
-    os.makedirs(student_folder, exist_ok=True)
-
-    print("Capturing photos for the student. Press 'c' to capture a photo, or 'q' to finish.")
-    cap = cv2.VideoCapture(0)
-    count = 0
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        # Convert to grayscale for face detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Detect faces
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-        
-        # Draw rectangles around detected faces
-        for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-
-        cv2.imshow("Add Student - Press 'c' to Capture Photo", frame)
-
-        key = cv2.waitKey(1)
-        if key & 0xFF == ord('c'):  # Capture photo
-            if len(faces) > 0:
-                x, y, w, h = faces[0]
-                img_path = os.path.join(student_folder, f"{name}_{count + 1}.jpg")
-                cv2.imwrite(img_path, frame[y:y+h, x:x+w])
-                print(f"Photo {count + 1} captured and saved.")
-                count += 1
-            else:
-                print("No face detected. Please try again.")
-        elif key & 0xFF == ord('q'):  # Quit capturing
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-    print(f"Data for {name} (Roll Number: {roll_number}) has been saved.")
-
-# Function to mark attendance
-def mark_attendance(name):
-    df = pd.read_csv(attendance_file)
-    if name not in df["Name"].values:
-        now = datetime.now()
-        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
-        roll_number, student_name = name.split("_")
-        df.loc[len(df)] = [roll_number, student_name, timestamp]
-        df.to_csv(attendance_file, index=False)
-        print(f"Attendance marked for {name}")
-    else:
-        print(f"{name} already marked present.")
-
-# Function to train a face recognizer (LBPH)
 def train_face_recognizer():
+    """Train the face recognizer."""
     print("Encoding faces from the dataset...")
-    faces, labels, label_dict = encode_faces(dataset_dir)
+    faces, labels, label_dict = encode_faces(DATASET_DIR)
     
     if not faces:
-        print("No faces found in dataset.")
+        st.error("No faces found in dataset.")
         return None, label_dict
 
     # Initialize the LBPH face recognizer
@@ -119,87 +83,141 @@ def train_face_recognizer():
 
     print("Training complete.")
     return recognizer, label_dict
-# Function to take attendance
-def take_attendance():
-    recognizer, label_dict = train_face_recognizer()
+
+def mark_attendance(name):
+    """Mark attendance for a student."""
+    df = pd.read_csv(ATTENDANCE_FILE)
+    if name not in df["Name"].values:
+        now = datetime.now()
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+        roll_number, student_name = name.split("_")
+        df.loc[len(df)] = [roll_number, student_name, timestamp]
+        df.to_csv(ATTENDANCE_FILE, index=False)
+        st.success(f"Attendance marked for {name}")
+    else:
+        st.warning(f"{name} already marked present.")
+
+def add_student_page():
+    """Streamlit page for adding a new student."""
+    st.header("Add New Student")
     
-    if recognizer is None:
+    # Input student details
+    name = st.text_input("Student Name")
+    roll_number = st.text_input("Roll Number")
+    
+    # File uploader for student images
+    uploaded_files = st.file_uploader(
+        "Upload Student Images (multiple allowed)", 
+        type=["jpg", "jpeg", "png"], 
+        accept_multiple_files=True
+    )
+    
+    if st.button("Save Student Data"):
+        if not name or not roll_number:
+            st.error("Please fill in all details")
+            return
+        
+        if not uploaded_files:
+            st.error("Please upload at least one image")
+            return
+        
+        # Create student folder
+        student_folder = os.path.join(DATASET_DIR, f"{roll_number}_{name}")
+        os.makedirs(student_folder, exist_ok=True)
+        
+        # Save uploaded images
+        for i, uploaded_file in enumerate(uploaded_files):
+            # Detect and save faces from the uploaded image
+            faces = detect_and_crop_faces(uploaded_file)
+            
+            if faces:
+                # Save the first detected face
+                face_path = os.path.join(student_folder, f"{name}_{i+1}.jpg")
+                cv2.imwrite(face_path, faces[0])
+                st.success(f"Image {i+1} saved successfully")
+            else:
+                st.warning(f"No face detected in image {i+1}")
+
+def take_attendance_page():
+    """Streamlit page for taking attendance."""
+    st.header("Take Attendance")
+    
+    # Try to train the recognizer
+    try:
+        recognizer, label_dict = train_face_recognizer()
+    except Exception as e:
+        st.error(f"Error training recognizer: {e}")
         return
-
-    cap = cv2.VideoCapture(0)
-    print("Starting attendance system. Press 'q' to quit.")
     
-    marked_students = set()  # Keep track of students whose attendance has been marked
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        # Convert to grayscale for face detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # File uploader for attendance images
+    uploaded_file = st.file_uploader(
+        "Upload Image for Attendance", 
+        type=["jpg", "jpeg", "png"]
+    )
+    
+    if uploaded_file is not None:
+        # Display the uploaded image
+        st.image(uploaded_file, caption="Uploaded Image")
+        
+        # Convert to grayscale
+        img = cv2.imdecode(np.frombuffer(uploaded_file.read(), np.uint8), cv2.IMREAD_COLOR)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
         # Detect faces
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-
+        
+        # Recognize faces
+        recognized_students = []
         for (x, y, w, h) in faces:
             # Extract face region
             face_img = gray[y:y+h, x:x+w]
             
-            # Recognize the face using LBPH
-            label, confidence = recognizer.predict(face_img)
-
-            if confidence < 100:  # Lower confidence is better
-                name = [k for k, v in label_dict.items() if v == label][0]
+            # Recognize the face
+            try:
+                label, confidence = recognizer.predict(face_img)
                 
-                # Check if this student's attendance has been marked
-                if name not in marked_students:
-                    mark_attendance(name)
-                    marked_students.add(name)  # Mark this student as attended
-
-            # Draw rectangle around the face without showing name
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-
-        # Display the camera feed
-        cv2.imshow("Attendance System", frame)
-
-        # Break loop if 'q' is pressed
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-
-# Function to view attendance
-def view_attendance():
-    df = pd.read_csv(attendance_file)
-    print("\nAttendance Record:")
-    print(df)
-
-# Main menu
-def main():
-    while True:
-        print("\nChoose an option:")
-        print("1. Add New Student")
-        print("2. Take Attendance")
-        print("3. View Attendance")
-        print("4. Exit")
-
-        choice = input("Enter your choice: ")
-
-        if choice == "1":
-            add_student()
-        elif choice == "2":
-            take_attendance()
-        elif choice == "3":
-            view_attendance()
-        elif choice == "4":
-            print("Exiting the system. Goodbye!")
-            break
+                if confidence < 100:  # Lower confidence is better
+                    name = [k for k, v in label_dict.items() if v == label][0]
+                    recognized_students.append(name)
+            except Exception as e:
+                st.error(f"Error in face recognition: {e}")
+        
+        # Mark attendance for recognized students
+        if recognized_students:
+            for student in set(recognized_students):
+                mark_attendance(student)
         else:
-            print("Invalid choice. Please try again.")
+            st.warning("No students recognized in the image")
 
+def view_attendance_page():
+    """Streamlit page for viewing attendance."""
+    st.header("Attendance Record")
+    
+    # Read and display attendance
+    try:
+        df = pd.read_csv(ATTENDANCE_FILE)
+        st.dataframe(df)
+    except Exception as e:
+        st.error(f"Error reading attendance file: {e}")
 
+def main():
+    """Main Streamlit application."""
+    st.title("Face Recognition Attendance System")
+    
+    # Sidebar navigation
+    page = st.sidebar.selectbox(
+        "Select Page", 
+        ["Add Student", "Take Attendance", "View Attendance"]
+    )
+    
+    # Page routing
+    if page == "Add Student":
+        add_student_page()
+    elif page == "Take Attendance":
+        take_attendance_page()
+    else:
+        view_attendance_page()
+
+# Requirements for Streamlit deployment
 if __name__ == "__main__":
     main()
