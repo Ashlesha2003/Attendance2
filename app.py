@@ -219,7 +219,7 @@ def view_attendance_page():
 
 def main():
     """Main Streamlit application."""
-    st.title("Face Recognition Attendance System")
+    st.title("Smart Attendance System")
     
    
     page = st.sidebar.selectbox(
